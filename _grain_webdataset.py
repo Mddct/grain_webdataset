@@ -83,6 +83,6 @@ if __name__ == '__main__':
   
   dataset = WdsGrainDataset(dataset)
   for d in dataset:
-      print(json.load(d)['text'])
+      print(json.loads(d['json'].decode('utf8'))['text'])
 
 
