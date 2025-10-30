@@ -1,9 +1,44 @@
-import json
-import glob
-
 import grain
 import webdataset as wds
 from grain._src.python.dataset import stats as dataset_stats
+
+audio_formats = [
+    'wav',
+    'flac',
+    'mp3',
+    'm4a',
+    'ogg',
+    'aac',
+    'aiff',
+    'au',
+    'opus',
+    'amr',
+    'mp4',
+    'avi',
+    'wmv',
+    'mpeg',
+    'mkv',
+    'mov',
+]
+
+
+def rename_audio_to_wav(sample):
+    current_audio_key = None
+    for key in sample:
+        if key in audio_formats:
+            current_audio_key = key
+            break
+
+    if current_audio_key and current_audio_key != 'wav':
+        sample['wav'] = sample.pop(current_audio_key)
+
+    return sample
+
+
+def no_split(src):
+    """ NOTE: grain is responsible for splitting data
+    """
+    yield from src
 
 
 class _WdsGrainIterator(grain.DatasetIterator):
@@ -20,7 +55,10 @@ class _WdsGrainIterator(grain.DatasetIterator):
         if self._current_wds_iter is None:
             try:
                 self._current_wds_iter = iter(
-                    wds.WebDataset(next(self._parent), shardshuffle=False))
+                    wds.WebDataset(next(self._parent),
+                                   shardshuffle=False,
+                                   nodesplitter=no_split,
+                                   workersplitter=no_split))
                 self.samples_processed_in_file = 0
             except StopIteration:
                 return False
@@ -28,17 +66,23 @@ class _WdsGrainIterator(grain.DatasetIterator):
 
     @dataset_stats.record_next_duration_if_output
     def __next__(self):
-        if not self._try_get_valid_iter():
-            raise StopIteration
-        try:
-            tar_line = next(self._current_wds_iter)
-            self.samples_processed_in_file += 1
-            return tar_line
-        except StopIteration:
-            self._current_wds_iter = None
-            return self.__next__()
-        except Exception:
-            return self.__next__()
+        while True:
+            if not self._try_get_valid_iter():
+                raise StopIteration
+            try:
+                elem_dict = next(self._current_wds_iter)
+                elem_dict = rename_audio_to_wav(elem_dict)
+                self.samples_processed_in_file += 1
+                return elem_dict
+
+            except StopIteration:
+                self._current_wds_iter = None
+                continue
+
+            except Exception as e:
+                print(
+                    f"Warning: Skipping problematic sample due to error: {e}")
+                continue
 
     def get_state(self):
         state = self._parent.get_state()
@@ -66,7 +110,7 @@ class _WdsGrainIterator(grain.DatasetIterator):
         return "WdsGrainDatasetIterator(transform=generator)"
 
 
-class WdsGrainDataset(grain.IterDataset):
+class WdsGrainIterDataset(grain.IterDataset):
 
     def __init__(self, parent):
         super().__init__(parent)
@@ -75,14 +119,3 @@ class WdsGrainDataset(grain.IterDataset):
         # Return the wrapped, webdataset-powered iterator
         parent_iter = self._parent.__iter__()
         return _WdsGrainIterator(parent_iter)
-
-if __name__ == '__main__':
-  webdataset_path = "*.tar.gz"
-  dataset = grain.MapDataset.source(glob.glob(webdataset_path))
-  dataset = dataset.to_iter_dataset()
-  
-  dataset = WdsGrainDataset(dataset)
-  for d in dataset:
-      print(json.loads(d['json'].decode('utf8'))['text'])
-
-
